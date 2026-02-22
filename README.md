@@ -8,10 +8,8 @@ A professional, fully local, open-source video clipper designed to turn long-for
 
 - **Automatic intelligent clip generation** with natural language-based scene detection and virality scoring
 - **AI-powered clip selection** using local Ollama models (optional but powerful)
-- **Advanced animated caption system** with multiple styles: TikTok-style word-highlight, YouTube professional, Minimal clean, etc.
+- **Advanced animated caption system** with multiple styles: TikTok-style word-highlight, YouTube professional, Minimal clean, etc. - NOT working well at the moment.
 - **Vertical (9:16) Shorts** and **Horizontal (16:9)** output modes — always ≥1080p resolution
-- **Intelligent face-aware cropping** for vertical mode (using OpenCV face detection)
-- **Word-level timed subtitles** with highlight animation
 - **Background music integration** (add your own royalty-free loops)
 - **Batch processing** support for multiple videos
 - **Persistent settings** saved to JSON file
