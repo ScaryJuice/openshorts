@@ -1,0 +1,11 @@
+# Core UI
+gradio>=6.0.0
+
+# Transcription (faster-whisper pulls in ctranslate2, onnxruntime, etc.)
+faster-whisper>=1.0.0
+
+# Face detection & video frame handling
+opencv-python>=4.9.0
+
+# Image processing (thumbnails, overlays, etc.)
+pillow>=10.0.0
