@@ -35,7 +35,12 @@ from typing import List, Dict, Tuple, Optional
 # Optional dependencies
 try:
     import ollama
-    OLLAMA_AVAILABLE = True
+    # Test if Ollama service is actually running and accessible
+    try:
+        models = ollama.list()
+        OLLAMA_AVAILABLE = len(models.get('models', [])) > 0
+    except Exception:
+        OLLAMA_AVAILABLE = False
 except ImportError:
     OLLAMA_AVAILABLE = False
 

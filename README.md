@@ -56,11 +56,15 @@ pip install -r requirements.txt
 ### 4. Optional: Ollama for smarter AI clip selection
 
 1. Download and install Ollama: https://ollama.com/download
-2. Start the server in a terminal:
+2. Install the Python package:
+   ```bash
+   pip install ollama
+   ```
+3. Start the server in a terminal:
    ```bash
    ollama serve
    ```
-3. Pull a lightweight model (recommended):
+4. Pull a lightweight model (recommended):
    ```bash
    ollama pull llama3.2   # or gemma2:9b, phi3:medium, etc.
    ```
