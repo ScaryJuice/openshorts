@@ -6,6 +6,10 @@ on:
       - 'v*'  # Trigger on version tags like v1.0.0
   workflow_dispatch:  # Allow manual trigger
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -47,7 +51,7 @@ jobs:
         pip3 install openshorts*.whl
         
         echo "✅ Installation complete!"
-        echo "🚀 Run: openshorts"
+        echo "🚀 Run: python -c \"import openshorts; openshorts.main()\""
         EOF
         chmod +x dist/install.sh
         
@@ -68,7 +72,7 @@ jobs:
         pip install openshorts*.whl
         
         echo ✅ Installation complete!
-        echo 🚀 Run: openshorts
+        echo 🚀 Run: python -c "import openshorts; openshorts.main()"
         pause
         EOF
         
@@ -82,13 +86,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     
     steps:
     - name: Download artifacts
       uses: actions/download-artifact@v4
       
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           openshorts-package/*
@@ -101,14 +107,12 @@ jobs:
           **Easy Install:**
           1. Download `openshorts-*.whl` and installer script
           2. Run `install.sh` (macOS/Linux) or `install.bat` (Windows)
-          3. Run `openshorts` to start
+          3. Run `python -c "import openshorts; openshorts.main()"` to start
           
           **Manual Install:**
           ```bash
           pip install openshorts-*.whl
-          openshorts
+          python -c "import openshorts; openshorts.main()"
           ```
           
           **Requirements:** Python 3.12+, FFmpeg
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
