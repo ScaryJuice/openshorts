@@ -1,0 +1,114 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build wheel twine
+    
+    - name: Build wheel
+      run: |
+        python -m build --wheel
+        
+    - name: Create installers
+      run: |
+        # Create install script for Unix
+        cat > dist/install.sh << 'EOF'
+        #!/bin/bash
+        echo "🎬 OpenShorts Installer"
+        echo "======================"
+        
+        # Check Python
+        python3 --version >/dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            echo "❌ Python 3 not found. Please install Python 3.12+ first."
+            exit 1
+        fi
+        
+        # Install OpenShorts
+        echo "📦 Installing OpenShorts..."
+        pip3 install openshorts*.whl
+        
+        echo "✅ Installation complete!"
+        echo "🚀 Run: openshorts"
+        EOF
+        chmod +x dist/install.sh
+        
+        # Create install script for Windows  
+        cat > dist/install.bat << 'EOF'
+        @echo off
+        echo 🎬 OpenShorts Installer
+        echo ======================
+        
+        python --version >nul 2>&1
+        if %errorlevel% neq 0 (
+            echo ❌ Python not found. Install Python 3.12+ first.
+            pause
+            exit /b 1
+        )
+        
+        echo 📦 Installing OpenShorts...
+        pip install openshorts*.whl
+        
+        echo ✅ Installation complete!
+        echo 🚀 Run: openshorts
+        pause
+        EOF
+        
+    - name: Upload Release Assets
+      uses: actions/upload-artifact@v3
+      with:
+        name: openshorts-package
+        path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          openshorts-package/*
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+        body: |
+          ## Installation
+          
+          **Easy Install:**
+          1. Download `openshorts-*.whl` and installer script
+          2. Run `install.sh` (macOS/Linux) or `install.bat` (Windows)
+          3. Run `openshorts` to start
+          
+          **Manual Install:**
+          ```bash
+          pip install openshorts-*.whl
+          openshorts
+          ```
+          
+          **Requirements:** Python 3.12+, FFmpeg
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

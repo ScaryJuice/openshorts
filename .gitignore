@@ -58,3 +58,10 @@ openshorts_clips/
 
 # Logs
 *.log
+
+# Packaging
+build/
+dist/
+*.spec
+*.egg-info/
+*.whl

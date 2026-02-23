@@ -15,7 +15,38 @@ A professional, fully local, open-source video clipper designed to turn long-for
 - **Persistent settings** saved to JSON file
 - **Clean output folder** with clips, thumbnails, and optional SRT files
 
-## Requirements
+## Installation
+
+### Option 1: Python Package (Recommended)
+
+**Download the wheel file from [Releases](../../releases) and install:**
+
+```bash
+# Download the .whl file, then:
+pip install openshorts-2.0.0-py3-none-any.whl
+
+# Or use the installer script (included in download):
+./install.sh        # macOS/Linux
+# or install.bat     # Windows
+```
+
+**Then run:**
+```bash
+openshorts
+```
+
+### Option 2: Docker (Cross-platform)
+
+```bash
+# Clone and run with Docker
+git clone https://github.com/yourusername/openshorts.git
+cd openshorts
+docker-compose up
+```
+
+Access at `http://localhost:7875`
+
+### Option 3: From Source (Developers)
 
 - Python 3.10+ (recommended: 3.12 or 3.13)
 - FFmpeg (required for video encoding/decoding)

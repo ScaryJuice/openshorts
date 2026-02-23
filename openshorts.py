@@ -1595,13 +1595,16 @@ def create_ui():
     
     return demo
 
-# Main execution
-if __name__ == "__main__":
+def main():
+    """Main entry point for OpenShorts application"""
     print("🎬 Starting OpenShorts v2...")
     
     # Check system requirements
     if not shutil.which('ffmpeg'):
-        print("❌ FFmpeg not found! Please install: brew install ffmpeg")
+        print("❌ FFmpeg not found! Please install FFmpeg first:")
+        print("  macOS: brew install ffmpeg")
+        print("  Ubuntu: sudo apt install ffmpeg")  
+        print("  Windows: winget install ffmpeg")
         exit(1)
     
     print("✅ System check passed")
@@ -1625,3 +1628,7 @@ if __name__ == "__main__":
             neutral_hue="slate"
         )
     )
+
+# Main execution
+if __name__ == "__main__":
+    main()
