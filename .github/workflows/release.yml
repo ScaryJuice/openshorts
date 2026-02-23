@@ -73,7 +73,7 @@ jobs:
         EOF
         
     - name: Upload Release Assets
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: openshorts-package
         path: dist/*
@@ -85,7 +85,7 @@ jobs:
     
     steps:
     - name: Download artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       
     - name: Create Release
       uses: softprops/action-gh-release@v1
