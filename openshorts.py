@@ -1587,21 +1587,25 @@ def batch_process_videos(video_files, progress_callback=None):
     return results
 
 def quick_generate_shorts(video_path, transcript, progress_callback=None):
-    """One-click generate 8 optimized shorts"""
-    # Temporarily set config for optimal shorts
+    """One-click generate optimized clips with current duration preferences"""
+    # Temporarily set config for optimal generation
     original_mode = config.get("output_mode")
     original_captions = config.get("animated_captions")
     original_count = config.get("clip_preferences.preferred_count")
+    original_talking_head = config.get("talking_head_mode")
     
     try:
-        # Set optimal settings for shorts
-        config.set("output_mode", "vertical")
-        config.set("animated_captions", True)
-        config.set("clip_preferences.preferred_count", 8)
-        config.set("talking_head_mode", True)
+        # Set optimal settings while respecting user's duration preferences
+        config.set("output_mode", "vertical")  # Shorts format
+        config.set("animated_captions", True)  # Always add captions for shorts
+        config.set("clip_preferences.preferred_count", 6)  # Reasonable number for longer clips
+        config.set("talking_head_mode", True)  # Better for vertical format
+        
+        # Keep user's duration preferences - don't override them
+        # This respects whether they want 60+ second clips or shorter ones
         
         if progress_callback:
-            progress_callback(0.1, "Optimizing for shorts generation...")
+            progress_callback(0.1, "Generating optimized clips with your duration settings...")
         
         # Generate clips with AI if available, otherwise auto
         if OLLAMA_AVAILABLE:
@@ -1616,6 +1620,7 @@ def quick_generate_shorts(video_path, transcript, progress_callback=None):
         config.set("output_mode", original_mode)
         config.set("animated_captions", original_captions)
         config.set("clip_preferences.preferred_count", original_count)
+        config.set("talking_head_mode", original_talking_head)
 
 # UI Components
 def create_ui():
@@ -1687,13 +1692,12 @@ def create_ui():
                             )
                     
                     with gr.Column(scale=1):
-                        gr.Markdown("### Quick Actions")
-                        quick_shorts_btn = gr.Button(
-                            "⚡ Generate Best 8 Shorts",
-                            variant="secondary",
-                            size="lg"
-                        )
-                        gr.Markdown("*Automatically creates 8 vertical shorts with captions*")
+                        gr.Markdown("### Next Steps")
+                        gr.Markdown("1. **Upload & transcribe** your video")
+                        gr.Markdown("2. Go to **Generate Clips** tab")  
+                        gr.Markdown("3. Choose generation method")
+                        gr.Markdown("4. Adjust settings as needed")
+                        gr.Markdown("5. Generate your clips!")
                 
                 # Progress and status
                 transcribe_progress = gr.Progress()
@@ -1764,23 +1768,38 @@ def create_ui():
                         )
             
             # AUTO CLIPS TAB
-            with gr.Tab("🤖 Auto Clips", id=2):
-                gr.Markdown("### Automatically generate clips using content analysis")
+            with gr.Tab("🤖 Generate Clips", id=2):
+                gr.Markdown("### Choose your generation method")
                 
                 with gr.Row():
                     with gr.Column():
+                        gr.Markdown("#### 📋 **Use Your Settings**")
+                        gr.Markdown("*Generates clips according to your preferences below*")
+                        
                         auto_generate_btn = gr.Button(
-                            "Generate Auto Clips",
+                            "🛠️ Generate with My Settings",
                             variant="primary",
                             size="lg"
                         )
                         
                         if OLLAMA_AVAILABLE:
                             ai_generate_btn = gr.Button(
-                                "🧠 AI Smart Clips (Ollama)",
+                                "🧠 AI Generate with My Settings",
                                 variant="secondary",
                                 size="lg"
                             )
+                        
+                        gr.Markdown("---")
+                        
+                        gr.Markdown("#### ⚡ **Quick Presets**") 
+                        gr.Markdown("*Uses optimized settings for specific formats*")
+                        
+                        quick_shorts_btn = gr.Button(
+                            "📱 Quick Vertical Shorts",
+                            variant="secondary",
+                            size="lg"
+                        )
+                        gr.Markdown("*Creates 6 vertical clips with your duration preferences*")
                         
                         auto_progress = gr.Progress()
                         auto_status = gr.Textbox(
@@ -1789,7 +1808,8 @@ def create_ui():
                         )
                     
                     with gr.Column():
-                        gr.Markdown("### Clip Preferences")
+                        gr.Markdown("### ⚙️ Your Clip Preferences")
+                        gr.Markdown("*These settings are used by 'Generate with My Settings' above*")
                         with gr.Group():
                             clip_count = gr.Slider(
                                 label="Number of clips",
@@ -1825,7 +1845,8 @@ def create_ui():
             
             # SETTINGS TAB
             with gr.Tab("⚙️ Settings", id=3):
-                gr.Markdown("### Configure your preferences")
+                gr.Markdown("### Global Settings")
+                gr.Markdown("*These settings are used when you click 'Generate with My Settings' in the Generate Clips tab*")
                 
                 with gr.Row():
                     with gr.Column():
