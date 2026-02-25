@@ -6,9 +6,11 @@ A professional, fully local, open-source video clipper designed to turn long-for
 
 ## Features
 
+- **Video URL Support** - Paste YouTube, TikTok, Twitter/X, Instagram, Vimeo links and process them directly
 - **Automatic intelligent clip generation** with natural language-based scene detection and virality scoring
 - **AI-powered clip selection** using local Ollama models (optional but powerful)
 - **Advanced animated caption system** with multiple styles: TikTok-style word-highlight, YouTube professional, Minimal clean, etc. - NOT working well at the moment.
+- **SRT subtitle export** - Export standard SRT subtitle files alongside videos for universal compatibility
 - **Vertical (9:16) Shorts** and **Horizontal (16:9)** output modes — always ≥1080p resolution
 - **Background music integration** (add your own royalty-free loops)
 - **Batch processing** support for multiple videos
@@ -82,6 +84,9 @@ source venv/bin/activate          # macOS / Linux
 
 ```bash
 pip install -r requirements.txt
+
+# For URL download support (recommended):
+pip install yt-dlp
 ```
 
 ### 4. Optional: Ollama for smarter AI clip selection
@@ -110,9 +115,13 @@ pip install -r requirements.txt
 2. Open your browser to:  
    http://127.0.0.1:7875 (or the port shown in the terminal)
 
-3. Drag & drop (or browse) your long-form video
+3. Drag & drop (or browse) your long-form video **OR** paste a video URL
 
-4. Configure options in the sidebar or settings tab:
+4. Choose your input method:
+   - **File Upload**: Drop local video files
+   - **Video URL**: Paste links from YouTube, TikTok, Twitter/X, Instagram, Vimeo, etc.
+
+5. Configure options in the sidebar or settings tab:
    - Output mode: Vertical Shorts (1080×1920) or Horizontal (1920×1080+)
    - Caption style & animation
    - Desired number of clips
@@ -133,14 +142,19 @@ All generated content is saved to:
 ```
 ./openshorts_clips/
 ├── clip_01.mp4
+├── clip_01.srt              # If SRT export enabled
+├── clip_01.ass              # If ASS export enabled  
 ├── clip_01_thumbnail.jpg
 ├── clip_02.mp4
+├── full_transcript.srt      # Full video transcript (when exported)
 └── ...
 ```
 
 - Clips are named sequentially
 - Thumbnails are auto-generated (middle frame)
-- Optional SRT subtitle files if enabled
+- SRT files for universal subtitle compatibility 
+- ASS files for advanced animated captions
+- Optional full transcript export in SRT format
 
 ## Configuration
 

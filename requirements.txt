@@ -9,3 +9,6 @@ opencv-python>=4.9.0
 
 # Image processing (thumbnails, overlays, etc.)
 pillow>=10.0.0
+
+# Video URL download support
+yt-dlp>=2023.12.30

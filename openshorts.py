@@ -56,12 +56,24 @@ try:
 except ImportError:
     MOVIEPY_AVAILABLE = False
 
+try:
+    import yt_dlp
+    YTDLP_AVAILABLE = True
+except ImportError:
+    YTDLP_AVAILABLE = False
+
+try:
+    import yt_dlp
+    YTDLP_AVAILABLE = True
+except ImportError:
+    YTDLP_AVAILABLE = False
+
 # Configuration manager
 class Config:
     def __init__(self):
         self.config_path = "openshorts_config.json"
         self.default_config = {
-            "output_mode": "horizontal",  # horizontal or vertical
+            "output_mode": "long-form",  # horizontal, vertical, or long-form
             "talking_head_mode": False,
             "animated_captions": False,
             "caption_style": {
@@ -76,15 +88,29 @@ class Config:
                 "word_emphasis": True
             },
             "clip_preferences": {
-                "min_duration": 25,
-                "max_duration": 75,
-                "preferred_count": 8,
+                "min_duration": 60,
+                "max_duration": 180,
+                "preferred_count": 4,
                 "hook_first_mode": True
             },
             "background_music": {
                 "enabled": False,
                 "volume": 0.15,
                 "music_folder": ""
+            },
+            "export_settings": {
+                "export_srt": False,
+                "export_ass": True,
+                "srt_style": "simple"
+            },
+            "stock_video": {
+                "enabled": False,
+                "folder_path": "",
+                "usage_percentage": 30,
+                "selection_mode": "random",
+                "emphasis_threshold": 70,
+                "min_segment_duration": 2.0,
+                "max_segment_duration": 8.0
             }
         }
         self.load_config()
@@ -169,16 +195,35 @@ def detect_face_center(video_path, timestamp=30):
         return None
     
     try:
+        # Validate timestamp against video duration
+        duration = get_video_duration(video_path)
+        if duration and timestamp >= duration:
+            timestamp = min(30, duration / 2)  # Use 30s or middle of video, whichever is smaller
+        
         # Extract a frame at the given timestamp
         cmd = ["ffmpeg", "-y", "-ss", str(timestamp), "-i", video_path, "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-"]
-        result = subprocess.run(cmd, capture_output=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"FFmpeg failed to extract frame: {result.stderr}")
+            return None
+        
+        if not result.stdout or len(result.stdout) == 0:
+            print("FFmpeg returned empty frame data")
+            return None
         
         # Decode image
         import numpy as np
         nparr = np.frombuffer(result.stdout, np.uint8)
+        
+        if len(nparr) == 0:
+            print("Empty frame buffer from FFmpeg")
+            return None
+            
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        if frame is None:
+        if frame is None or frame.size == 0:
+            print("Failed to decode frame data")
             return None
         
         # Load face detector
@@ -192,6 +237,9 @@ def detect_face_center(video_path, timestamp=30):
             x, y, w, h = largest_face
             return (x + w//2, y + h//2)
         
+    except Exception as e:
+        print(f"Face detection failed: {e}")
+        return None
         return None
     except Exception as e:
         print(f"Face detection failed: {e}")
@@ -435,20 +483,89 @@ def format_time_ass(seconds):
     centiseconds = int((seconds % 1) * 100)
     return f"{hours}:{minutes:02d}:{secs:02d}.{centiseconds:02d}"
 
-def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_callback=None):
+def format_time_srt(seconds):
+    """Convert seconds to SRT time format HH:MM:SS,mmm"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    milliseconds = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
+
+def create_srt_file(segments, output_path, style="simple"):
+    """
+    Create SRT subtitle file from transcript segments
+    
+    Args:
+        segments: List of transcript segments with start, end, text
+        output_path: Path to save the SRT file
+        style: 'simple' (basic text) or 'enhanced' (with formatting)
+    """
+    srt_content = ""
+    subtitle_count = 1
+    
+    for seg_idx, segment in enumerate(segments):
+        start_time = format_time_srt(segment["start"])
+        end_time = format_time_srt(segment["end"])
+        text = segment["text"].strip()
+        
+        # Apply style formatting
+        if style == "enhanced":
+            # Add basic formatting for enhanced readability
+            # Bold for emphasis words
+            text = re.sub(r'\b(amazing|incredible|awesome|important|never|always)\b', r'<b>\1</b>', text, flags=re.IGNORECASE)
+            # Italic for questions
+            if text.endswith('?'):
+                text = f"<i>{text}</i>"
+        
+        # Handle long lines (split at 42 characters - SRT best practice)
+        if len(text) > 42:
+            words = text.split()
+            lines = []
+            current_line = ""
+            
+            for word in words:
+                if len(current_line + " " + word) <= 42:
+                    current_line += (" " if current_line else "") + word
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            
+            if current_line:
+                lines.append(current_line)
+            
+            text = "\n".join(lines)
+        
+        # Add subtitle entry
+        srt_content += f"{subtitle_count}\n"
+        srt_content += f"{start_time} --> {end_time}\n"
+        srt_content += f"{text}\n\n"
+        
+        subtitle_count += 1
+    
+    # Write SRT file
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(srt_content.strip())
+    
+    return output_path
+
+def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_callback=None, clip_segments=None):
     """
     Create a clip with intelligent processing based on current settings
-    Handles both horizontal and vertical modes, with optional captions and music
+    Handles both horizontal and vertical modes, with optional captions, music, and stock video integration
     """
     try:
-        output_mode = config.get("output_mode", "horizontal")
+        output_mode = config.get("output_mode", "long-form")
         talking_head = config.get("talking_head_mode", False)
         add_captions = config.get("animated_captions", False)
         bg_music_enabled = config.get("background_music.enabled", False)
+        stock_enabled = config.get("stock_video.enabled", False)
+        # Temporarily disable stock video to fix FFmpeg syntax issues
+        stock_enabled = False  # TODO: Remove this line when stock video is fixed
         
         w, h = get_resolution(input_video)
         
-        # Determine output resolution and cropping
+        # Determine output resolution and cropping based on mode
         if output_mode == "vertical":
             target_w, target_h = 1080, 1920
             # For vertical mode, we want to crop and scale intelligently
@@ -471,6 +588,12 @@ def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_cal
                 # Standard vertical scaling with padding
                 scale_filter = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease"
                 vf = f"{scale_filter},pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+        elif output_mode == "long-form":
+            # Long-form content mode - optimized for longer clips with centered content
+            target_w, target_h = 1920, 1080  # 16:9 landscape format
+            # Center content with minimal cropping, preserve aspect ratio
+            scale_filter = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease"
+            vf = f"{scale_filter},pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
         else:
             # Horizontal mode (original behavior)
             target_w, target_h = 1920, 1080
@@ -491,32 +614,112 @@ def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_cal
             "-c:a", "aac", "-b:a", "128k"
         ]
         
-        # Add video filtering with robust error handling
-        final_vf = None
-        if vf:
-            final_vf = vf
-            # Handle captions if enabled (with fallback)
+        # Handle stock video integration if enabled
+        stock_filter_complex = None
+        stock_inputs_count = 0
+        final_vf = None  # Initialize final_vf before any code paths
+        
+        if stock_enabled and clip_segments:
+            stock_folder = config.get("stock_video.folder_path", "")
+            stock_videos = get_stock_videos(stock_folder)
+            
+            if stock_videos:
+                if progress_callback:
+                    progress_callback(0.3, "Planning stock video integration...")
+                
+                usage_percent = config.get("stock_video.usage_percentage", 30)
+                selection_mode = config.get("stock_video.selection_mode", "random")
+                min_duration = config.get("stock_video.min_segment_duration", 2.0)
+                max_duration = config.get("stock_video.max_segment_duration", 8.0)
+                
+                # Create stock video plan
+                stock_plan = create_stock_integration_plan(
+                    clip_segments, stock_videos, usage_percent, 
+                    selection_mode, min_duration, max_duration
+                )
+                
+                if stock_plan['segments']:
+                    if progress_callback:
+                        progress_callback(0.4, f"Adding {len(stock_plan['segments'])} stock video segments...")
+                    
+                    # Add stock video inputs to FFmpeg command
+                    for i, stock_segment in enumerate(stock_plan['segments']):
+                        stock_duration = stock_segment['end'] - stock_segment['start']
+                        cmd.extend(["-ss", "0", "-i", stock_segment['stock_video'], "-t", str(stock_duration)])
+                        stock_inputs_count += 1
+                    
+                    # Build filter complex for stock video compositing
+                    filter_parts = []
+                    
+                    # Scale all stock videos to match output resolution
+                    for i in range(stock_inputs_count):
+                        input_idx = i + 1  # +1 because main video is input 0
+                        filter_parts.append(f"[{input_idx}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black[stock{i}]")
+                    
+                    # Create overlay timeline with proper timing
+                    main_input = "[0:v]"
+                    if vf:  # Apply main video filters first
+                        filter_parts.insert(0, f"[0:v]{vf}[main]")
+                        main_input = "[main]"
+                    
+                    current_output = main_input
+                    for i, stock_segment in enumerate(stock_plan['segments']):
+                        start_time = stock_segment['start']
+                        end_time = stock_segment['end']
+                        # Proper FFmpeg overlay syntax: [base][overlay]overlay=enable='between(t,start,end)'[output]
+                        filter_parts.append(f"{current_output}[stock{i}]overlay=enable='between(t,{start_time},{end_time})'[v{i}]")
+                        current_output = f"[v{i}]"
+                    
+                    stock_filter_complex = ";".join(filter_parts)
+                    final_video_map = f"[v{stock_inputs_count-1}]"
+        
+        # Handle video filtering and captions
+        if stock_filter_complex:
+            # Stock video integration with filter_complex
+            caption_filter = ""
             if add_captions:
                 ass_path = output_path.replace('.mp4', '.ass')
                 if os.path.exists(ass_path):
                     try:
-                        # Use simple subtitles filter - ASS file already has styling
-                        final_vf += f",subtitles={ass_path}"
+                        # Add captions to the final composited video
+                        # Remove brackets from final_video_map for proper syntax
+                        video_input = final_video_map.strip('[]')
+                        caption_filter = f";[{video_input}]subtitles={ass_path}[final]"
+                        final_video_map = "[final]"
                     except Exception as e:
-                        print(f"Caption filter error, continuing without captions: {e}")
-                        # Continue with video processing without captions
-        elif add_captions:
-            # Captions only, no other video filtering
-            ass_path = output_path.replace('.mp4', '.ass')
-            if os.path.exists(ass_path):
-                try:
-                    final_vf = f"subtitles={ass_path}"
-                except Exception as e:
-                    print(f"Caption filter error, creating video without captions: {e}")
-                    final_vf = None
-        
-        if final_vf:
-            cmd.extend(["-vf", final_vf])
+                        print(f"Caption filter error in stock mode: {e}")
+            
+            cmd.extend(["-filter_complex", stock_filter_complex + caption_filter])
+            cmd.extend(["-map", final_video_map, "-map", "0:a"])  # Map final video and original audio
+        else:
+            # Standard video filtering without stock integration
+            final_vf = None
+            if vf:
+                final_vf = vf
+                # Handle captions if enabled (with fallback)
+                if add_captions:
+                    ass_path = output_path.replace('.mp4', '.ass')
+                    if os.path.exists(ass_path):
+                        try:
+                            # Properly escape subtitle path for FFmpeg filter
+                            escaped_ass_path = ass_path.replace('\\', '\\\\').replace(':', '\\:').replace("'", "\\'")
+                            final_vf += f",subtitles='{escaped_ass_path}'"
+                        except Exception as e:
+                            print(f"Caption filter error, continuing without captions: {e}")
+            elif add_captions:
+                # Captions only, no other video filtering
+                ass_path = output_path.replace('.mp4', '.ass')
+                if os.path.exists(ass_path):
+                    try:
+                        # Properly escape subtitle path for FFmpeg filter
+                        escaped_ass_path = ass_path.replace('\\', '\\\\').replace(':', '\\:').replace("'", "\\'")
+                        final_vf = f"subtitles='{escaped_ass_path}'"
+                    except Exception as e:
+                        print(f"Caption filter error, creating video without captions: {e}")
+                        final_vf = None
+            
+            if final_vf:
+                cmd.extend(["-vf", final_vf])
         
         # Add background music if enabled
         if bg_music_enabled:
@@ -527,9 +730,31 @@ def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_cal
                     import random
                     music_file = os.path.join(music_folder, random.choice(music_files))
                     volume = config.get("background_music.volume", 0.15)
-                    cmd.insert(-1, "-i")  # Insert before output path
-                    cmd.insert(-1, music_file)
-                    cmd.extend(["-filter_complex", f"[1:a]volume={volume}[bg]; [0:a][bg]amix=inputs=2:duration=first[a]", "-map", "0:v", "-map", "[a]"])
+                    
+                    if stock_filter_complex:
+                        # When stock video is enabled, add music input and integrate with existing filter_complex
+                        music_input_idx = stock_inputs_count + 1  # After main video and stock videos
+                        cmd.extend(["-i", music_file])
+                        
+                        # Update existing filter_complex to include audio mixing
+                        audio_filter = f"[{music_input_idx}:a]volume={volume}[bg]; [0:a][bg]amix=inputs=2:duration=first[a]"
+                        
+                        # Find existing filter_complex in cmd and update it
+                        for i, arg in enumerate(cmd):
+                            if arg == "-filter_complex":
+                                original_complex = cmd[i + 1]
+                                cmd[i + 1] = original_complex + ";" + audio_filter
+                                break
+                        
+                        # Update mapping to use mixed audio
+                        for i, arg in enumerate(cmd):
+                            if arg == "-map" and i + 1 < len(cmd) and cmd[i + 1] == "0:a":
+                                cmd[i + 1] = "[a]"
+                                break
+                    else:
+                        # Standard background music without stock video
+                        cmd.extend(["-i", music_file])
+                        cmd.extend(["-filter_complex", f"[1:a]volume={volume}[bg]; [0:a][bg]amix=inputs=2:duration=first[a]", "-map", "0:v", "-map", "[a]"])
         
         cmd.append(output_path)
         
@@ -541,11 +766,14 @@ def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_cal
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             # If there was a subtitle error, try again without captions
-            if "subtitles" in str(e.stderr) and final_vf and "subtitles" in final_vf:
+            # Only attempt subtitle fallback for non-stock video mode
+            if "subtitles" in str(e.stderr) and not stock_filter_complex and final_vf and "subtitles" in final_vf:
                 print(f"Subtitle processing failed, retrying without captions: {e.stderr}")
-                # Remove subtitle filter and try again
+                # Remove subtitle filter and try again - handle both old and new syntax
                 if ",subtitles=" in final_vf:
-                    fallback_vf = final_vf.split(",subtitles=")[0]
+                    # Find the subtitles part and remove it (handles quoted paths)
+                    import re
+                    fallback_vf = re.sub(r',subtitles=[^,]*', '', final_vf)
                 elif final_vf.startswith("subtitles="):
                     fallback_vf = None
                 else:
@@ -583,6 +811,135 @@ def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_cal
         if progress_callback:
             progress_callback(1.0, f"Error: {error_msg}")
         raise RuntimeError(error_msg)
+
+def get_stock_videos(stock_folder):
+    """Get list of stock video files from the specified folder"""
+    if not stock_folder or not os.path.exists(stock_folder):
+        return []
+    
+    stock_videos = []
+    video_extensions = ('.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v')
+    
+    try:
+        for file in os.listdir(stock_folder):
+            if file.lower().endswith(video_extensions):
+                full_path = os.path.join(stock_folder, file)
+                if os.path.isfile(full_path):
+                    stock_videos.append(full_path)
+    except (OSError, PermissionError) as e:
+        print(f"Error reading stock video folder: {e}")
+        return []
+    
+    return stock_videos
+
+def find_emphasis_segments(transcript_segments, min_segment_duration=2.0):
+    """Find segments with high emphasis/energy for potential stock video replacement"""
+    emphasis_segments = []
+    
+    for segment in transcript_segments:
+        text = segment.get('text', '').lower()
+        duration = segment.get('end', 0) - segment.get('start', 0)
+        
+        # Skip segments that are too short
+        if duration < min_segment_duration:
+            continue
+        
+        # Calculate emphasis score based on content
+        emphasis_score = 0
+        
+        # High-energy words and phrases
+        energy_words = [
+            'amazing', 'incredible', 'awesome', 'fantastic', 'unbelievable',
+            'shocking', 'surprising', 'mind-blowing', 'revolutionary',
+            'breakthrough', 'game-changer', 'epic', 'insane', 'crazy'
+        ]
+        
+        for word in energy_words:
+            if word in text:
+                emphasis_score += 2
+        
+        # Exclamation points and caps indicate energy
+        emphasis_score += text.count('!') * 1.5
+        emphasis_score += sum(1 for c in text if c.isupper()) * 0.1
+        
+        # Questions can be engaging
+        if '?' in text:
+            emphasis_score += 1
+        
+        # Numbers and statistics are often interesting
+        import re
+        if re.search(r'\d+', text):
+            emphasis_score += 0.5
+        
+        segment_data = {
+            'start': segment.get('start', 0),
+            'end': segment.get('end', 0),
+            'text': segment.get('text', ''),
+            'emphasis_score': emphasis_score,
+            'duration': duration
+        }
+        
+        emphasis_segments.append(segment_data)
+    
+    # Sort by emphasis score (highest first)
+    emphasis_segments.sort(key=lambda x: x['emphasis_score'], reverse=True)
+    
+    return emphasis_segments
+
+def create_stock_integration_plan(transcript_segments, stock_videos, usage_percentage=30, 
+                                selection_mode="random", min_duration=2.0, max_duration=8.0):
+    """Create a plan for integrating stock videos at emphasis points"""
+    if not stock_videos or usage_percentage <= 0:
+        return {'segments': [], 'coverage_percentage': 0}
+    
+    # Find emphasis segments
+    emphasis_segments = find_emphasis_segments(transcript_segments, min_duration)
+    
+    if not emphasis_segments:
+        return {'segments': [], 'coverage_percentage': 0}
+    
+    # Calculate total clip duration
+    total_duration = max([seg.get('end', 0) for seg in transcript_segments]) if transcript_segments else 0
+    target_duration = (usage_percentage / 100) * total_duration
+    
+    # Select segments for stock video replacement
+    selected_segments = []
+    used_duration = 0
+    stock_video_index = 0
+    
+    for segment in emphasis_segments:
+        if used_duration >= target_duration:
+            break
+            
+        # Limit segment duration
+        segment_duration = min(segment['duration'], max_duration)
+        segment_end = segment['start'] + segment_duration
+        
+        # Select stock video
+        if selection_mode == "sequential":
+            stock_video = stock_videos[stock_video_index % len(stock_videos)]
+            stock_video_index += 1
+        else:  # random
+            import random
+            stock_video = random.choice(stock_videos)
+        
+        selected_segments.append({
+            'start': segment['start'],
+            'end': segment_end,
+            'stock_video': stock_video,
+            'original_text': segment['text'],
+            'emphasis_score': segment['emphasis_score']
+        })
+        
+        used_duration += segment_duration
+    
+    coverage_percentage = (used_duration / total_duration * 100) if total_duration > 0 else 0
+    
+    return {
+        'segments': selected_segments,
+        'coverage_percentage': coverage_percentage,
+        'total_stock_duration': used_duration
+    }
 
 def calculate_virality_score(segment_text, context_segments=None):
     """
@@ -717,9 +1074,9 @@ def auto_generate_clips_v2(transcript, video_path, progress_callback=None):
     Enhanced auto clip generation with virality scoring and user preferences
     """
     try:
-        min_duration = config.get("clip_preferences.min_duration", 25)
-        max_duration = config.get("clip_preferences.max_duration", 75)
-        num_clips = config.get("clip_preferences.preferred_count", 8)
+        min_duration = config.get("clip_preferences.min_duration", 60)
+        max_duration = config.get("clip_preferences.max_duration", 180)
+        num_clips = config.get("clip_preferences.preferred_count", 4)
         hook_first = config.get("clip_preferences.hook_first_mode", True)
         
         # Determine target resolution based on output mode
@@ -792,44 +1149,49 @@ def auto_generate_clips_v2(transcript, video_path, progress_callback=None):
                 progress = 0.3 + (idx / len(selected_clips)) * 0.7
                 progress_callback(progress, f"Creating clip {idx+1}/{len(selected_clips)}...")
             
-            # Create caption file if captions are enabled
-            ass_path = None
-            if config.get("animated_captions", False):
-                ass_path = os.path.join(output_dir, f"clip_{idx+1:02d}.ass")
-                # Extract segments for this clip
-                clip_segments = []
-                for seg in transcript:
-                    if seg["start"] >= clip["start"] and seg["end"] <= clip["end"]:
-                        # Adjust timestamps relative to clip start
-                        adjusted_seg = {
-                            "start": seg["start"] - clip["start"],
-                            "end": seg["end"] - clip["start"],
-                            "text": seg["text"],
-                            "words": []
-                        }
-                        # Adjust word timestamps if available
-                        if "words" in seg and seg["words"]:
-                            for word in seg["words"]:
-                                if word["start"] >= clip["start"] and word["end"] <= clip["end"]:
-                                    adjusted_seg["words"].append({
-                                        "start": word["start"] - clip["start"],
-                                        "end": word["end"] - clip["start"],
-                                        "text": word["text"]
-                                    })
-                        clip_segments.append(adjusted_seg)
-                
+            # Extract segments for this clip (used for both ASS and SRT)
+            clip_segments = []
+            for seg in transcript:
+                if seg["start"] >= clip["start"] and seg["end"] <= clip["end"]:
+                    # Adjust timestamps relative to clip start
+                    adjusted_seg = {
+                        "start": seg["start"] - clip["start"],
+                        "end": seg["end"] - clip["start"],
+                        "text": seg["text"],
+                        "words": []
+                    }
+                    # Adjust word timestamps if available
+                    if "words" in seg and seg["words"]:
+                        for word in seg["words"]:
+                            if word["start"] >= clip["start"] and word["end"] <= clip["end"]:
+                                adjusted_seg["words"].append({
+                                    "start": word["start"] - clip["start"],
+                                    "end": word["end"] - clip["start"],
+                                    "text": word["text"]
+                                })
+                    clip_segments.append(adjusted_seg)
+            
             # Generate clip path first
             out_path = os.path.join(output_dir, f"clip_{idx+1:02d}.mp4")
-            ass_path = out_path.replace('.mp4', '.ass')
-                
-            if clip_segments:
-                create_advanced_captions(
-                    clip_segments, 
-                    ass_path, 
-                    config.get("caption_style", {}),
-                    (target_w, target_h)
-                )
-            create_smart_clip(video_path, clip["start"], clip["end"], out_path)
+            
+            # Create caption files if enabled
+            if config.get("animated_captions", False) or config.get("export_settings.export_ass", True):
+                ass_path = out_path.replace('.mp4', '.ass')
+                if clip_segments:
+                    create_advanced_captions(
+                        clip_segments, 
+                        ass_path, 
+                        config.get("caption_style", {}),
+                        (target_w, target_h)
+                    )
+            
+            # Create SRT file if enabled
+            if config.get("export_settings.export_srt", False):
+                srt_path = out_path.replace('.mp4', '.srt')
+                if clip_segments:
+                    srt_style = config.get("export_settings.srt_style", "simple")
+                    create_srt_file(clip_segments, srt_path, srt_style)
+            create_smart_clip(video_path, clip["start"], clip["end"], out_path, progress_callback, clip_segments)
             
             # Create thumbnail
             thumb_path = generate_thumbnail(video_path, clip["start"] + clip["duration"]/2, out_path.replace('.mp4', '_thumb.jpg'))
@@ -861,14 +1223,16 @@ def llm_smart_clips_v2(transcript, video_path, progress_callback=None):
         return auto_generate_clips_v2(transcript, video_path, progress_callback)
     
     try:
-        num_clips = config.get("clip_preferences.preferred_count", 6)
-        min_dur = config.get("clip_preferences.min_duration", 25)
-        max_dur = config.get("clip_preferences.max_duration", 75)
+        num_clips = config.get("clip_preferences.preferred_count", 4)
+        min_dur = config.get("clip_preferences.min_duration", 60)
+        max_dur = config.get("clip_preferences.max_duration", 180)
         
         # Determine target resolution based on output mode
-        output_mode = config.get("output_mode", "horizontal")
+        output_mode = config.get("output_mode", "long-form")
         if output_mode == "vertical":
             target_w, target_h = 1080, 1920
+        elif output_mode == "long-form":
+            target_w, target_h = 1920, 1080  # Long-form content
         else:
             target_w, target_h = 1920, 1080
         
@@ -937,41 +1301,48 @@ TRANSCRIPT:
                 progress = 0.5 + (idx / len(clips_data)) * 0.5
                 progress_callback(progress, f"Creating AI clip {idx+1}/{len(clips_data)}...")
             
-            # Create caption file if captions are enabled
-            if config.get("animated_captions", False):
-                ass_path = os.path.join(output_dir, f"clip_{idx+1:02d}.ass")
-                clip_segments = []
-                for seg in transcript:
-                    if seg["start"] >= clip["start"] and seg["end"] <= clip["end"]:
-                        adjusted_seg = {
-                            "start": seg["start"] - clip["start"],
-                            "end": seg["end"] - clip["start"],
-                            "text": seg["text"],
-                            "words": []
-                        }
-                        # Adjust word timestamps if available  
-                        if "words" in seg and seg["words"]:
-                            for word in seg["words"]:
-                                if word["start"] >= clip["start"] and word["end"] <= clip["end"]:
-                                    adjusted_seg["words"].append({
-                                        "start": word["start"] - clip["start"],
-                                        "end": word["end"] - clip["start"],
-                                        "text": word["text"]
-                                    })
-                        clip_segments.append(adjusted_seg)
+            # Extract segments for this clip (used for both ASS and SRT)
+            clip_segments = []
+            for seg in transcript:
+                if seg["start"] >= clip["start"] and seg["end"] <= clip["end"]:
+                    adjusted_seg = {
+                        "start": seg["start"] - clip["start"],
+                        "end": seg["end"] - clip["start"],
+                        "text": seg["text"],
+                        "words": []
+                    }
+                    # Adjust word timestamps if available  
+                    if "words" in seg and seg["words"]:
+                        for word in seg["words"]:
+                            if word["start"] >= clip["start"] and word["end"] <= clip["end"]:
+                                adjusted_seg["words"].append({
+                                    "start": word["start"] - clip["start"],
+                                    "end": word["end"] - clip["start"],
+                                    "text": word["text"]
+                                })
+                    clip_segments.append(adjusted_seg)
                 
             # Generate clip path first
             out_path = os.path.join(output_dir, f"clip_{idx+1:02d}.mp4")
-            ass_path = out_path.replace('.mp4', '.ass')
-                
-            if clip_segments:
-                create_advanced_captions(
-                    clip_segments, 
-                    ass_path, 
-                    config.get("caption_style", {}),
-                    (target_w, target_h)
-                )
-            create_smart_clip(video_path, clip["start"], clip["end"], out_path)
+            
+            # Create caption files if enabled
+            if config.get("animated_captions", False) or config.get("export_settings.export_ass", True):
+                ass_path = out_path.replace('.mp4', '.ass')
+                if clip_segments:
+                    create_advanced_captions(
+                        clip_segments, 
+                        ass_path, 
+                        config.get("caption_style", {}),
+                        (target_w, target_h)
+                    )
+            
+            # Create SRT file if enabled
+            if config.get("export_settings.export_srt", False):
+                srt_path = out_path.replace('.mp4', '.srt')
+                if clip_segments:
+                    srt_style = config.get("export_settings.srt_style", "simple")
+                    create_srt_file(clip_segments, srt_path, srt_style)
+            create_smart_clip(video_path, clip["start"], clip["end"], out_path, progress_callback, clip_segments)
             
             # Create thumbnail
             thumb_path = generate_thumbnail(video_path, clip["start"] + (clip["end"] - clip["start"])/2, out_path.replace('.mp4', '_thumb.jpg'))
@@ -1001,6 +1372,16 @@ TRANSCRIPT:
 def generate_thumbnail(video_path, timestamp, output_path):
     """Generate thumbnail at specific timestamp"""
     try:
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Get video duration to validate timestamp
+        duration = get_video_duration(video_path)
+        if duration and timestamp >= duration:
+            # If timestamp is beyond video duration, use middle of video
+            timestamp = duration / 2
+            print(f"Timestamp {timestamp} beyond video duration {duration}, using middle timestamp")
+        
         cmd = [
             "ffmpeg", "-y",
             "-ss", str(timestamp),
@@ -1009,8 +1390,11 @@ def generate_thumbnail(video_path, timestamp, output_path):
             "-q:v", "2",
             output_path
         ]
-        subprocess.run(cmd, check=True, capture_output=True)
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"Thumbnail generation failed: {e.stderr}")
+        return None
     except Exception as e:
         print(f"Thumbnail generation failed: {e}")
         return None
@@ -1025,8 +1409,8 @@ def manual_clip_v2(video_path, start, end, progress_callback=None):
         os.makedirs(output_dir, exist_ok=True)
         out_path = os.path.join(output_dir, f"manual_{format_time(start)}.mp4")
         
-        # Generate caption file if needed and we have a transcript
-        # Note: This would need to be enhanced to accept transcript data
+        # Generate subtitle files if we have a transcript in the state
+        # Note: This would need to be enhanced to accept transcript data from the calling function
         
         create_smart_clip(video_path, start, end, out_path, progress_callback)
         
@@ -1041,6 +1425,130 @@ def manual_clip_v2(video_path, start, end, progress_callback=None):
         error_msg = f"Manual clip creation failed: {str(e)}"
         if progress_callback:
             progress_callback(1.0, f"❌ {error_msg}")
+        raise RuntimeError(error_msg)
+
+def export_full_transcript_srt(transcript, output_path, style="simple"):
+    """
+    Export the full transcript as an SRT file
+    
+    Args:
+        transcript: Full transcript data from whisper
+        output_path: Path to save the SRT file
+        style: 'simple' or 'enhanced'
+    """
+    try:
+        create_srt_file(transcript, output_path, style)
+        return output_path
+    except Exception as e:
+        raise RuntimeError(f"Full transcript SRT export failed: {str(e)}")
+
+def is_valid_video_url(url):
+    """
+    Check if the provided URL is a valid video URL that can be downloaded
+    """
+    if not url or not isinstance(url, str):
+        return False
+    
+    url = url.strip()
+    if not url:
+        return False
+        
+    # Common video URL patterns
+    video_domains = [
+        'youtube.com', 'youtu.be', 'vimeo.com', 'tiktok.com', 'twitter.com', 'x.com',
+        'instagram.com', 'facebook.com', 'twitch.tv', 'dailymotion.com',
+        'rumble.com', 'bitchute.com', 'brighteon.com'
+    ]
+    
+    return any(domain in url.lower() for domain in video_domains) and (url.startswith('http://') or url.startswith('https://'))
+
+def download_video_from_url(url, progress_callback=None):
+    """
+    Download video from URL using yt-dlp
+    
+    Args:
+        url: Video URL to download
+        progress_callback: Optional callback for progress updates
+    
+    Returns:
+        Path to downloaded video file
+    """
+    if not YTDLP_AVAILABLE:
+        raise RuntimeError("yt-dlp is not installed. Please install it: pip install yt-dlp")
+    
+    if not is_valid_video_url(url):
+        raise ValueError("Invalid video URL provided")
+    
+    try:
+        if progress_callback:
+            progress_callback(0.1, "Initializing video download...")
+        
+        # Create temporary download directory
+        download_dir = tempfile.mkdtemp(prefix="openshorts_download_")
+        
+        def progress_hook(d):
+            if progress_callback and d['status'] == 'downloading':
+                if 'downloaded_bytes' in d and 'total_bytes' in d:
+                    percent = d['downloaded_bytes'] / d['total_bytes']
+                    progress_callback(0.1 + (percent * 0.8), f"Downloading: {percent*100:.1f}%")
+                elif '_percent_str' in d:
+                    progress_callback(0.5, f"Downloading: {d['_percent_str']}")
+            elif progress_callback and d['status'] == 'finished':
+                progress_callback(0.9, "Download complete, processing...")
+        
+        # Configure yt-dlp options for best quality video
+        ydl_opts = {
+            'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+            'format': 'best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best',
+            'progress_hooks': [progress_hook],
+            'no_warnings': True,
+            'extract_flat': False,
+            'writesubtitles': False,
+            'writeautomaticsub': False,
+        }
+        
+        # Download the video
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            # Find the downloaded file
+            video_path = None
+            for file in os.listdir(download_dir):
+                if file.lower().endswith(('.mp4', '.mkv', '.webm', '.avi', '.mov')):
+                    video_path = os.path.join(download_dir, file)
+                    break
+            
+            if not video_path or not os.path.exists(video_path):
+                raise RuntimeError("Downloaded video file not found")
+            
+            # Move to a more permanent location for processing
+            final_path = os.path.join(tempfile.gettempdir(), f"openshorts_video_{int(time.time())}.mp4")
+            shutil.move(video_path, final_path)
+            
+            # Clean up download directory
+            shutil.rmtree(download_dir, ignore_errors=True)
+            
+            if progress_callback:
+                progress_callback(1.0, "✅ Video downloaded successfully!")
+            
+            return final_path, info.get('title', 'Downloaded Video')
+            
+    except Exception as e:
+        # Clean up on error
+        if 'download_dir' in locals() and os.path.exists(download_dir):
+            shutil.rmtree(download_dir, ignore_errors=True)
+        
+        error_msg = f"Video download failed: {str(e)}"
+        if "not supported" in str(e).lower():
+            error_msg = "This video URL is not supported. Try a direct video link or supported platform."
+        elif "private" in str(e).lower() or "unavailable" in str(e).lower():
+            error_msg = "This video is private or unavailable for download."
+        elif "network" in str(e).lower() or "connection" in str(e).lower():
+            error_msg = "Network error. Please check your internet connection and try again."
+        
+        if progress_callback:
+            progress_callback(1.0, f"❌ {error_msg}")
+        
         raise RuntimeError(error_msg)
 
 def batch_process_videos(video_files, progress_callback=None):
@@ -1137,10 +1645,27 @@ def create_ui():
                 
                 with gr.Row():
                     with gr.Column(scale=2):
+                        gr.Markdown("### Upload Method")
+                        upload_method = gr.Radio(
+                            choices=["File Upload", "Video URL"],
+                            label="Choose input method",
+                            value="File Upload",
+                            interactive=True
+                        )
+                        
                         video_input = gr.Video(
                             label="Drop your video here",
                             height=400,
-                            interactive=True
+                            interactive=True,
+                            visible=True
+                        )
+                        
+                        url_input = gr.Textbox(
+                            label="Video URL",
+                            placeholder="https://youtube.com/watch?v=...",
+                            info="Supports YouTube, TikTok, Twitter/X, Instagram, Vimeo, and more",
+                            interactive=True,
+                            visible=False
                         )
                         
                         with gr.Row():
@@ -1148,6 +1673,12 @@ def create_ui():
                                 "🎯 Start Transcription",
                                 variant="primary",
                                 size="lg"
+                            )
+                            download_btn = gr.Button(
+                                "⬇️ Download & Transcribe",
+                                variant="primary", 
+                                size="lg",
+                                visible=False
                             )
                             batch_upload = gr.File(
                                 label="Batch Upload (Multiple Videos)",
@@ -1179,6 +1710,18 @@ def create_ui():
                     interactive=True,
                     wrap=True
                 )
+                
+                with gr.Row():
+                    export_srt_btn = gr.Button(
+                        "📄 Export Full Transcript as SRT",
+                        variant="secondary",
+                        size="sm"
+                    )
+                    export_status = gr.Textbox(
+                        label="Export Status",
+                        interactive=False,
+                        placeholder="Transcribe video first, then export..."
+                    )
             
             # TRANSCRIPT & MANUAL TAB
             with gr.Tab("✂️ Manual Clips", id=1):
@@ -1250,26 +1793,29 @@ def create_ui():
                         with gr.Group():
                             clip_count = gr.Slider(
                                 label="Number of clips",
-                                minimum=3,
-                                maximum=20,
-                                value=config.get("clip_preferences.preferred_count", 8),
-                                step=1
+                                minimum=2,
+                                maximum=15,
+                                value=config.get("clip_preferences.preferred_count", 4),
+                                step=1,
+                                info="Fewer, higher-quality clips for long-form content"
                             )
                             
                             min_duration = gr.Slider(
                                 label="Minimum duration (seconds)",
-                                minimum=15,
-                                maximum=60,
-                                value=config.get("clip_preferences.min_duration", 25),
-                                step=5
+                                minimum=30,
+                                maximum=120,
+                                value=config.get("clip_preferences.min_duration", 60),
+                                step=5,
+                                info="Longer clips provide better context and engagement"
                             )
                             
                             max_duration = gr.Slider(
                                 label="Maximum duration (seconds)",
-                                minimum=30,
-                                maximum=120,
-                                value=config.get("clip_preferences.max_duration", 75),
-                                step=5
+                                minimum=60,
+                                maximum=300,
+                                value=config.get("clip_preferences.max_duration", 180),
+                                step=10,
+                                info="Up to 5 minutes for comprehensive segments"
                             )
                             
                             hook_first = gr.Checkbox(
@@ -1285,10 +1831,10 @@ def create_ui():
                     with gr.Column():
                         gr.Markdown("**Output Format**")
                         output_mode = gr.Radio(
-                            choices=["horizontal", "vertical"],
-                            label="Video Orientation",
-                            value=config.get("output_mode", "horizontal"),
-                            info="Horizontal: 1920x1080 | Vertical: 1080x1920 (Shorts)"
+                            choices=["long-form", "horizontal", "vertical"],
+                            label="Video Orientation", 
+                            value=config.get("output_mode", "long-form"),
+                            info="Long-form: 1920x1080 (Optimized for longer clips) | Horizontal: 1920x1080 | Vertical: 1080x1920 (Shorts)"
                         )
                         
                         talking_head_mode = gr.Checkbox(
@@ -1359,10 +1905,61 @@ def create_ui():
                             step=0.05
                         )
                         
+                        gr.Markdown("**Subtitle Export**")
+                        export_srt = gr.Checkbox(
+                            label="Export SRT Files",
+                            value=config.get("export_settings.export_srt", False),
+                            info="Generate standard SRT subtitle files alongside videos"
+                        )
+                        
+                        export_ass = gr.Checkbox(
+                            label="Export ASS Files",
+                            value=config.get("export_settings.export_ass", True),
+                            info="Generate advanced ASS subtitle files (with animations)"
+                        )
+                        
+                        srt_style = gr.Radio(
+                            choices=["simple", "enhanced"],
+                            label="SRT Style",
+                            value=config.get("export_settings.srt_style", "simple"),
+                            info="Simple: Plain text | Enhanced: Basic formatting and line breaks"
+                        )
+                        
+                        gr.Markdown("**Stock Videos (B-Roll)**")
+                        stock_enabled = gr.Checkbox(
+                            label="Enable Stock Video Integration",
+                            value=config.get("stock_video.enabled", False),
+                            info="Automatically add B-roll footage at emphasis points"
+                        )
+                        
+                        stock_folder = gr.Textbox(
+                            label="Stock Videos Folder Path",
+                            value=config.get("stock_video.folder_path", ""),
+                            placeholder="/path/to/stock/videos",
+                            info="Folder containing MP4/MOV stock footage files"
+                        )
+                        
+                        stock_usage = gr.Slider(
+                            label="Usage Percentage",
+                            minimum=10,
+                            maximum=80,
+                            value=config.get("stock_video.usage_percentage", 30),
+                            step=5,
+                            info="Percentage of clip duration that uses stock footage"
+                        )
+                        
+                        stock_selection = gr.Radio(
+                            choices=["random", "manual"],
+                            label="Selection Mode",
+                            value=config.get("stock_video.selection_mode", "random"),
+                            info="Random: Auto-select | Manual: User chooses per clip"
+                        )
+                        
                         gr.Markdown("**System Info**")
                         with gr.Group():
                             gr.Markdown(f"""
                             - FFmpeg: {'✅ Available' if shutil.which('ffmpeg') else '❌ Not found'}
+                            - yt-dlp: {'✅ Available' if YTDLP_AVAILABLE else '❌ Not installed'}
                             - Ollama: {'✅ Available' if OLLAMA_AVAILABLE else '❌ Not installed'}
                             - OpenCV: {'✅ Available' if OPENCV_AVAILABLE else '❌ Not installed'}
                             - MoviePy: {'✅ Available' if MOVIEPY_AVAILABLE else '❌ Not installed'}
@@ -1410,7 +2007,7 @@ def create_ui():
         def handle_transcribe(video, progress=gr.Progress()):
             """Handle video transcription with progress"""
             if not video:
-                return None, None, "Please upload a video first!"
+                return None, None, "Please upload a video first!", None
             
             try:
                 def progress_callback(pct, msg):
@@ -1438,6 +2035,64 @@ def create_ui():
             
             except Exception as e:
                 return None, None, f"❌ Transcription failed: {str(e)}", None
+        
+        def handle_url_download(url, progress=gr.Progress()):
+            """Handle video URL download and transcription"""
+            if not url or not url.strip():
+                return None, None, "Please enter a video URL!", None
+            
+            if not YTDLP_AVAILABLE:
+                return None, None, "❌ yt-dlp not installed. Run: pip install yt-dlp", None
+                
+            try:
+                def progress_callback(pct, msg):
+                    progress(pct, desc=msg)
+                
+                # Download video
+                video_path, video_title = download_video_from_url(url, progress_callback)
+                
+                # Transcribe downloaded video
+                progress_callback(0.1, "Starting transcription...")
+                transcript = transcribe_with_progress(video_path, 
+                    lambda pct, msg: progress_callback(0.1 + pct * 0.9, msg))
+                
+                # Format for display
+                display_data = []
+                for seg in transcript:
+                    score = calculate_virality_score(seg["text"])
+                    display_data.append([
+                        format_time(seg["start"]),
+                        format_time(seg["end"]),
+                        seg["text"][:100] + "..." if len(seg["text"]) > 100 else seg["text"],
+                        f"{score}/100"
+                    ])
+                
+                return (
+                    display_data,
+                    transcript,
+                    f"✅ Downloaded '{video_title}' and transcribed {len(transcript)} segments!",
+                    video_path
+                )
+                
+            except Exception as e:
+                return None, None, f"❌ {str(e)}", None
+        
+        def toggle_input_method(method):
+            """Toggle between file upload and URL input"""
+            if method == "File Upload":
+                return (
+                    gr.update(visible=True),   # video_input
+                    gr.update(visible=False),  # url_input
+                    gr.update(visible=True),   # transcribe_btn
+                    gr.update(visible=False)   # download_btn
+                )
+            else:  # Video URL
+                return (
+                    gr.update(visible=False),  # video_input
+                    gr.update(visible=True),   # url_input
+                    gr.update(visible=False),  # transcribe_btn
+                    gr.update(visible=True)    # download_btn
+                )
         
         def handle_auto_clips(transcript, video, clip_count, min_dur, max_dur, hook_first, progress=gr.Progress()):
             """Handle automatic clip generation"""
@@ -1487,6 +2142,22 @@ def create_ui():
             except Exception as e:
                 return None, f"❌ Manual clip failed: {str(e)}"
         
+        def handle_export_full_transcript(transcript):
+            """Handle full transcript SRT export"""
+            if not transcript:
+                return "Please transcribe a video first!"
+            
+            try:
+                output_path = os.path.join("openshorts_clips", "full_transcript.srt")
+                os.makedirs("openshorts_clips", exist_ok=True)
+                
+                srt_style = config.get("export_settings.srt_style", "simple")
+                export_full_transcript_srt(transcript, output_path, srt_style)
+                
+                return f"✅ Full transcript exported to: {output_path}"
+            except Exception as e:
+                return f"❌ Export failed: {str(e)}"
+        
         def handle_quick_shorts(video, transcript, progress=gr.Progress()):
             """Handle quick shorts generation"""
             if not video or not transcript:
@@ -1504,7 +2175,9 @@ def create_ui():
         def save_user_settings(
             output_mode_val, talking_head_val, animated_captions_val,
             caption_style_preset_val, caption_font_size_val, caption_position_val, 
-            caption_background_val, word_emphasis_val, bg_music_enabled_val, music_folder_val, music_volume_val
+            caption_background_val, word_emphasis_val, bg_music_enabled_val, music_folder_val, music_volume_val,
+            export_srt_val, export_ass_val, srt_style_val,
+            stock_enabled_val, stock_folder_val, stock_usage_val, stock_selection_val
         ):
             """Save user settings to config"""
             try:
@@ -1519,6 +2192,13 @@ def create_ui():
                 config.set("background_music.enabled", bg_music_enabled_val)
                 config.set("background_music.music_folder", music_folder_val)
                 config.set("background_music.volume", float(music_volume_val))
+                config.set("export_settings.export_srt", export_srt_val)
+                config.set("export_settings.export_ass", export_ass_val)
+                config.set("export_settings.srt_style", srt_style_val)
+                config.set("stock_video.enabled", stock_enabled_val)
+                config.set("stock_video.folder_path", stock_folder_val)
+                config.set("stock_video.usage_percentage", int(stock_usage_val))
+                config.set("stock_video.selection_mode", stock_selection_val)
                 
                 return "✅ Settings saved successfully!"
             except Exception as e:
@@ -1542,10 +2222,29 @@ def create_ui():
             return "No clips to clear."
         
         # Wire up events
+        
+        upload_method.change(
+            fn=toggle_input_method,
+            inputs=[upload_method],
+            outputs=[video_input, url_input, transcribe_btn, download_btn]
+        )
+        
         transcribe_btn.click(
             fn=handle_transcribe,
             inputs=[video_input],
             outputs=[transcript_display, transcript_state, transcribe_status, video_state]
+        )
+        
+        download_btn.click(
+            fn=handle_url_download,
+            inputs=[url_input],
+            outputs=[transcript_display, transcript_state, transcribe_status, video_state]
+        )
+        
+        export_srt_btn.click(
+            fn=handle_export_full_transcript,
+            inputs=[transcript_state],
+            outputs=[export_status]
         )
         
         auto_generate_btn.click(
@@ -1578,7 +2277,9 @@ def create_ui():
             inputs=[
                 output_mode, talking_head_mode, animated_captions,
                 caption_style_preset, caption_font_size, caption_position, 
-                caption_background, word_emphasis, bg_music_enabled, music_folder, music_volume
+                caption_background, word_emphasis, bg_music_enabled, music_folder, music_volume,
+                export_srt, export_ass, srt_style,
+                stock_enabled, stock_folder, stock_usage, stock_selection
             ],
             outputs=[settings_status]
         )
@@ -1618,7 +2319,7 @@ def main():
     demo = create_ui()
     demo.launch(
         server_name="127.0.0.1",
-        server_port=7875,
+        server_port=7860,  # Use Gradio's default port
         share=False,
         show_error=True,
         quiet=False,
