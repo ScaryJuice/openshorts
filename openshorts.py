@@ -186,6 +186,31 @@ def get_video_duration(video_path):
         print(f"Duration detection failed: {e}")
         return 0
 
+def is_audio_file(file_path):
+    """Determine if a file is audio-only or video"""
+    if not file_path:
+        return False
+    
+    # Check file extension first
+    audio_extensions = ('.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma')
+    video_extensions = ('.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v')
+    
+    file_ext = os.path.splitext(file_path.lower())[1]
+    if file_ext in audio_extensions:
+        return True
+    elif file_ext in video_extensions:
+        return False
+    
+    # Use ffprobe to check for video streams
+    try:
+        cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-select_streams", "v", file_path]
+        output = subprocess.check_output(cmd).decode()
+        data = json.loads(output)
+        return len(data.get("streams", [])) == 0  # True if no video streams
+    except Exception:
+        # Fallback to extension-based detection
+        return file_ext in audio_extensions
+
 def detect_face_center(video_path, timestamp=30):
     """
     Detect face center for smart cropping (requires opencv)
@@ -1658,9 +1683,9 @@ def create_ui():
                             interactive=True
                         )
                         
-                        video_input = gr.Video(
-                            label="Drop your video here",
-                            height=400,
+                        video_input = gr.File(
+                            label="📁 Upload Video or Audio File",
+                            file_types=["video", "audio"],
                             interactive=True,
                             visible=True
                         )
@@ -1686,14 +1711,14 @@ def create_ui():
                                 visible=False
                             )
                             batch_upload = gr.File(
-                                label="Batch Upload (Multiple Videos)",
+                                label="Batch Upload (Multiple Videos/Audio Files)",
                                 file_count="multiple",
-                                file_types=["video"]
+                                file_types=["video", "audio"]
                             )
                     
                     with gr.Column(scale=1):
                         gr.Markdown("### Next Steps")
-                        gr.Markdown("1. **Upload & transcribe** your video")
+                        gr.Markdown("1. **Upload & transcribe** your video or audio file")
                         gr.Markdown("2. Go to **Generate Clips** tab")  
                         gr.Markdown("3. Choose generation method")
                         gr.Markdown("4. Adjust settings as needed")
@@ -1704,7 +1729,7 @@ def create_ui():
                 transcribe_status = gr.Textbox(
                     label="Status",
                     interactive=False,
-                    placeholder="Upload a video to begin..."
+                    placeholder="Upload a video or audio file to begin..."
                 )
                 
                 # Transcript display
@@ -1724,7 +1749,7 @@ def create_ui():
                     export_status = gr.Textbox(
                         label="Export Status",
                         interactive=False,
-                        placeholder="Transcribe video first, then export..."
+                        placeholder="Transcribe video or audio first, then export..."
                     )
             
             # TRANSCRIPT & MANUAL TAB
@@ -2026,13 +2051,20 @@ def create_ui():
         # Event Handlers
         
         def handle_transcribe(video, progress=gr.Progress()):
-            """Handle video transcription with progress"""
+            """Handle video/audio transcription with progress"""
             if not video:
-                return None, None, "Please upload a video first!", None
+                return None, None, "Please upload a video or audio file first!", None
             
             try:
                 def progress_callback(pct, msg):
                     progress(pct, desc=msg)
+                
+                # Check if it's an audio file
+                is_audio = is_audio_file(video)
+                file_type = "audio" if is_audio else "video"
+                
+                if progress_callback and is_audio:
+                    progress_callback(0.05, f"Detected audio file: {os.path.basename(video)}")
                 
                 transcript = transcribe_with_progress(video, progress_callback)
                 
@@ -2047,10 +2079,14 @@ def create_ui():
                         f"{score}/100"
                     ])
                 
+                status_msg = f"✅ Transcription complete! {len(transcript)} segments processed."
+                if is_audio:
+                    status_msg += " Note: Audio file detected - use 'Export Full Transcript' to save SRT with timings."
+                
                 return (
                     display_data,
                     transcript,
-                    f"✅ Transcription complete! {len(transcript)} segments processed.",
+                    status_msg,
                     video
                 )
             
@@ -2118,7 +2154,11 @@ def create_ui():
         def handle_auto_clips(transcript, video, clip_count, min_dur, max_dur, hook_first, progress=gr.Progress()):
             """Handle automatic clip generation"""
             if not transcript or not video:
-                return None, "Please transcribe video first!"
+                return None, "Please transcribe video or audio first!"
+            
+            # Check if it's an audio file
+            if is_audio_file(video):
+                return None, "❌ Audio files cannot generate video clips. Use 'Export Full Transcript' to save the transcription with timings as SRT."
             
             try:
                 # Update config with current settings
@@ -2139,7 +2179,11 @@ def create_ui():
         def handle_ai_clips(transcript, video, clip_count, progress=gr.Progress()):
             """Handle AI-powered clip generation"""
             if not transcript or not video:
-                return None, "Please transcribe video first!"
+                return None, "Please transcribe video or audio first!"
+            
+            # Check if it's an audio file
+            if is_audio_file(video):
+                return None, "❌ Audio files cannot generate video clips. Use 'Export Full Transcript' to save the transcription with timings as SRT."
             
             config.set("clip_preferences.preferred_count", int(clip_count))
             
@@ -2152,7 +2196,11 @@ def create_ui():
         def handle_manual_clip(video, start, end, progress=gr.Progress()):
             """Handle manual clip creation"""
             if not video:
-                return None, "Please upload a video first!"
+                return None, "Please upload a video or audio file first!"
+            
+            # Check if it's an audio file
+            if is_audio_file(video):
+                return None, "❌ Audio files cannot generate video clips. Use 'Export Full Transcript' to save the transcription with timings as SRT."
             
             def progress_callback(pct, msg):
                 progress(pct, desc=msg)
@@ -2182,7 +2230,11 @@ def create_ui():
         def handle_quick_shorts(video, transcript, progress=gr.Progress()):
             """Handle quick shorts generation"""
             if not video or not transcript:
-                return None, "Please upload and transcribe a video first!"
+                return None, "Please upload and transcribe a video or audio file first!"
+            
+            # Check if it's an audio file
+            if is_audio_file(video):
+                return None, "❌ Audio files cannot generate video clips. Use 'Export Full Transcript' to save the transcription with timings as SRT."
             
             def progress_callback(pct, msg):
                 progress(pct, desc=msg)
