@@ -593,26 +593,28 @@ def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_cal
         # Determine output resolution and cropping based on mode
         if output_mode == "vertical":
             target_w, target_h = 1080, 1920
-            # For vertical mode, we want to crop and scale intelligently
+            # For vertical mode, we want to zoom in and fill the screen (crop excess instead of padding)
             if talking_head and h < w:  # Landscape video in portrait mode
-                # Crop to center or face-detected area
+                # Crop to center or face-detected area, then zoom to fill
                 face_center = detect_face_center(input_video, start_sec + 5) if OPENCV_AVAILABLE else None
                 if face_center:
-                    crop_x = max(0, min(face_center[0] - h//2, w - h))
-                    crop_filter = f"crop={h}:{h}:{crop_x}:0"
+                    # Crop around face with wider aspect for better vertical fill
+                    crop_w = min(w, int(h * 0.8))  # Slightly wider than square for better vertical scaling
+                    crop_x = max(0, min(face_center[0] - crop_w//2, w - crop_w))
+                    crop_filter = f"crop={crop_w}:{h}:{crop_x}:0"
                 else:
-                    # Center crop to square, then scale
-                    crop_size = min(w, h)
-                    crop_x = (w - crop_size) // 2
-                    crop_y = (h - crop_size) // 2
-                    crop_filter = f"crop={crop_size}:{crop_size}:{crop_x}:{crop_y}"
+                    # Center crop with optimized dimensions for vertical fill
+                    crop_w = min(w, int(h * 0.8))  # Slightly wider than square
+                    crop_x = (w - crop_w) // 2
+                    crop_filter = f"crop={crop_w}:{h}:{crop_x}:0"
                 
-                scale_filter = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease"
-                vf = f"{crop_filter},{scale_filter},pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+                # Scale to fill vertical space (zoom in, crop excess)
+                scale_filter = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase"
+                vf = f"{crop_filter},{scale_filter},crop={target_w}:{target_h}"
             else:
-                # Standard vertical scaling with padding
-                scale_filter = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease"
-                vf = f"{scale_filter},pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
+                # Standard vertical scaling - zoom to fill (no black padding)
+                scale_filter = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase"
+                vf = f"{scale_filter},crop={target_w}:{target_h}"
         elif output_mode == "long-form":
             # Long-form content mode - optimized for longer clips with centered content
             target_w, target_h = 1920, 1080  # 16:9 landscape format
@@ -679,7 +681,12 @@ def create_smart_clip(input_video, start_sec, end_sec, output_path, progress_cal
                     # Scale all stock videos to match output resolution
                     for i in range(stock_inputs_count):
                         input_idx = i + 1  # +1 because main video is input 0
-                        filter_parts.append(f"[{input_idx}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black[stock{i}]")
+                        if output_mode == "vertical":
+                            # For vertical mode, zoom stock videos to fill (consistent with main video)
+                            filter_parts.append(f"[{input_idx}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}[stock{i}]")
+                        else:
+                            # For other modes, use padding approach
+                            filter_parts.append(f"[{input_idx}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black[stock{i}]")
                     
                     # Create overlay timeline with proper timing
                     main_input = "[0:v]"
