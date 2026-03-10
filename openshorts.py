@@ -2397,9 +2397,16 @@ def main():
     
     # Launch UI
     demo = create_ui()
+    
+    # Get server configuration from environment or use defaults
+    server_name = os.environ.get('GRADIO_SERVER_NAME', '127.0.0.1')
+    server_port = int(os.environ.get('GRADIO_SERVER_PORT', '7860'))
+    
+    print(f"🚀 Starting server on {server_name}:{server_port}")
+    
     demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,  # Use Gradio's default port
+        server_name=server_name,
+        server_port=server_port,
         share=False,
         show_error=True,
         quiet=False,

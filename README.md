@@ -43,10 +43,14 @@ openshorts
 # Clone and run with Docker
 git clone https://github.com/yourusername/openshorts.git
 cd openshorts
-docker-compose up
+docker-compose up -d
 ```
 
-Access at `http://localhost:7875`
+**Services included:**
+- OpenShorts web interface: `http://localhost:7875`
+- Ollama AI service: `http://localhost:11434`
+
+To stop: `docker-compose down`
 
 ### Option 3: From Source (Developers)
 
@@ -113,7 +117,7 @@ pip install yt-dlp
    ```
 
 2. Open your browser to:  
-   http://127.0.0.1:7875 (or the port shown in the terminal)
+   http://localhost:7875 (or the port shown in the terminal)
 
 3. Drag & drop (or browse) your long-form video **OR** paste a video URL
 
